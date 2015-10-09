@@ -39,5 +39,6 @@ column2 <- separate(tweetsback2, text, into = c("Bytes", "Description"), sep = "
 df <- data.frame(Bytes = column1$Bytes, Description = column2$Description)
 
 # merge retrieved encoding with original encoding to one df &v write to file
-eotw1 <- merge(alltogether, df1, by = "Description")
-write.csv2(eotw1, file = "eotw1.csv", row.names = FALSE)
+eotw <- merge(alltogether, df1, by = "Description")
+names(eotw) <- c("Description", "Native", "Bytes", "R-encoding")
+write.csv2(eotw, file = "emDict.csv", row.names = FALSE)
