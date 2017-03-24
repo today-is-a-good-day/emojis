@@ -10,38 +10,7 @@ library(ggplot2)
 
 Sys.setlocale(category = "LC_ALL", locale = "en_US.UTF-8")
 
-# load twitter credentials and authorize
-load("twitCred.Rdata")
-api_key <- twitCred$consumerKey
-api_secret <- twitCred$consumerSecret
-access_token <- twitCred$oauthKey
-access_token_secret <- twitCred$oauthSecret
-setup_twitter_oauth(api_key,api_secret,access_token,access_token_secret)
-
-# read in emoji dictionary
-emDict_raw <- read.csv2("emojis.csv") %>% 
-  select(EN, ftu8, unicode) %>% 
-  rename(description = EN, r.encoding = ftu8)
-
-# plain skin tones
-skin_tones <- c("light skin tone", 
-                "medium-light skin tone", 
-                "medium skin tone",
-                "medium-dark skin tone", 
-                "dark skin tone")
-
-# remove plain skin tones and remove skin tone info in description
-emDict <- emDict_raw %>%
-  # remove plain skin tones emojis
-  filter(!description %in% skin_tones) %>%
-  # remove emojis with skin tones info, e.g. remove woman: light skin tone and only
-  # keep woman
-  filter(!grepl(":", description)) %>%
-  mutate(description = tolower(description)) %>%
-  mutate(unicode = as.u_char(unicode))
-# all emojis with more than one unicode codepoint become NA 
-
-# utility functions
+## ---- utility functions ----
 # this function outputs the emojis found in a string as well as their occurences
 count_matches <- function(string, matchto, description, sentiment = NA) {
   
@@ -79,6 +48,102 @@ emojis_matching <- function(texts, matchto, description, sentiment = NA) {
   
 }
 
+# function that separates capital letters hashtags
+hashgrep <- function(text) {
+  hg <- function(text) {
+    result <- ""
+    while(text != result) {
+      result <- text
+      text <- gsub("#[[:alpha:]]+\\K([[:upper:]]+)", " \\1", text, perl = TRUE)
+    }
+    return(text)
+  }
+  unname(sapply(text, hg))
+}
+
+# tweets cleaning pipe
+cleanPosts <- function(text) {
+  clean_texts <- text %>%
+    gsub("<.*>", "", .) %>% # remove emojis
+    gsub("&amp;", "", .) %>% # remove &
+    gsub("(RT|via)((?:\\b\\W*@\\w+)+)", "", .) %>% # remove retweet entities
+    gsub("@\\w+", "", .) %>% # remove at people
+    hashgrep %>%
+    gsub("[[:punct:]]", "", .) %>% # remove punctuation
+    gsub("[[:digit:]]", "", .) %>% # remove digits
+    gsub("http\\w+", "", .) %>% # remove html links
+    iconv(from = "latin1", to = "ASCII", sub="") %>% # remove emoji and bizarre signs
+    gsub("[ \t]{2,}", " ", .) %>% # remove unnecessary spaces
+    gsub("^\\s+|\\s+$", "", .) %>% # remove unnecessary spaces
+    tolower
+  return(clean_texts)
+}
+
+# function that outputs a df of emojis with their top 5 words (by frequency)
+wordFreqEmojis <- function(df, text = df$text, description = df$description, top = 5) {
+  
+  
+  lapply(unique(description), function(x) {
+    
+    dat <- df %>% 
+      filter(description == x)
+    
+    myCorpus <- Corpus(VectorSource(dat$text)) %>%
+      tm_map(removePunctuation) %>%
+      tm_map(stripWhitespace) %>%
+      tm_map(removeWords, stopwords("english"))
+    
+    dtm <- DocumentTermMatrix(myCorpus)
+    # find the sum of words in each Document
+    rowTotals <- apply(dtm , 1, sum)
+    dtm.new   <- dtm[rowTotals> 0, ]
+    # collapse matrix by summing over columns
+    freq <- colSums(as.matrix(dtm))
+    # create sort order (descending)
+    ord <- order(freq, decreasing=TRUE)
+    
+    list(emoji = rep(x, top), words = names(freq[ord][1:top]), frequency = freq[ord][1:top]) 
+    
+  }) %>% 
+    bind_rows
+  
+}
+
+## ---- setup ----
+# load twitter credentials and authorize
+# input your own credentials here
+load("twitCred.Rdata")
+api_key <- twitCred$consumerKey
+api_secret <- twitCred$consumerSecret
+access_token <- twitCred$oauthKey
+access_token_secret <- twitCred$oauthSecret
+setup_twitter_oauth(api_key,api_secret,access_token,access_token_secret)
+
+# read in emoji dictionary
+# where to get it: https://raw.githubusercontent.com/felipesua/sampleTexts/master/emojis.csv
+# input your custom path to file
+emDict_raw <- read.csv2("emojis.csv") %>% 
+  select(EN, ftu8, unicode) %>% 
+  rename(description = EN, r.encoding = ftu8)
+
+# plain skin tones
+skin_tones <- c("light skin tone", 
+                "medium-light skin tone", 
+                "medium skin tone",
+                "medium-dark skin tone", 
+                "dark skin tone")
+
+# remove plain skin tones and remove skin tone info in description
+emDict <- emDict_raw %>%
+  # remove plain skin tones emojis
+  filter(!description %in% skin_tones) %>%
+  # remove emojis with skin tones info, e.g. remove woman: light skin tone and only
+  # keep woman
+  filter(!grepl(":", description)) %>%
+  mutate(description = tolower(description)) %>%
+  mutate(unicode = as.u_char(unicode))
+# all emojis with more than one unicode codepoint become NA 
+
 matchto <- emDict$r.encoding
 description <- emDict$description
 
@@ -89,6 +154,7 @@ raw_usermedia <- userTimeline(user = "parishilton", n = 3200) %>%
 usermedia <- raw_usermedia %>% 
   mutate(text = iconv(text, from = "latin1", to = "ascii", sub = "byte"))
 
+## ---- most used emoji ----
 # rank emojis by occurence in data
 rank <- emojis_matching(usermedia$text, matchto, description) %>% 
   group_by(description) %>% 
@@ -97,6 +163,7 @@ rank <- emojis_matching(usermedia$text, matchto, description) %>%
 
 head(rank, 10)
 
+## ---- tweets with most emojis ----
 tweets <- emojis_matching(usermedia$text, matchto, description) %>% 
   group_by(text) %>% 
   summarise(n = sum(count)) %>%
@@ -107,6 +174,7 @@ tweets <- emojis_matching(usermedia$text, matchto, description) %>%
 
 mean(tweets$n, na.rm = TRUE)
 
+## ---- sentiment analysis with emojis ---- 
 # reference website
 url <- "http://kt.ijs.si/data/Emoji_sentiment_ranking/index.html"
 
@@ -157,75 +225,7 @@ usermedia_merged %>%
     geom_point() + 
     geom_line()
 
-test <- usermedia_merged %>% 
-  mutate(date = as.Date(created)) %>% 
-  group_by(date) %>% 
-  summarise(sent = mean(sentiment_score, na.rm = TRUE))
-
-## Emojis associated with words in tweets?
-
-# function that separates capital letters hashtags
-hashgrep <- function(text) {
-  hg <- function(text) {
-    result <- ""
-    while(text != result) {
-      result <- text
-      text <- gsub("#[[:alpha:]]+\\K([[:upper:]]+)", " \\1", text, perl = TRUE)
-    }
-    return(text)
-  }
-  unname(sapply(text, hg))
-}
-
-# tweets cleaning pipe
-cleanPosts <- function(text) {
-  clean_texts <- text %>%
-    gsub("<.*>", "", .) %>% # remove emojis
-    gsub("&amp;", "", .) %>% # remove &
-    gsub("(RT|via)((?:\\b\\W*@\\w+)+)", "", .) %>% # remove retweet entities
-    gsub("@\\w+", "", .) %>% # remove at people
-    hashgrep %>%
-    gsub("[[:punct:]]", "", .) %>% # remove punctuation
-    gsub("[[:digit:]]", "", .) %>% # remove digits
-    gsub("http\\w+", "", .) %>% # remove html links
-    iconv(from = "latin1", to = "ASCII", sub="") %>% # remove emoji and bizarre signs
-    gsub("[ \t]{2,}", " ", .) %>% # remove unnecessary spaces
-    gsub("^\\s+|\\s+$", "", .) %>% # remove unnecessary spaces
-    tolower
-  return(clean_texts)
-}
-
-# function that outputs a df of emojis with their top 5 words (by frequency)
-wordFreqEmojis <- function(df, text = df$text, description = df$description, top = 5) {
-  
-  
-  lapply(unique(description), function(x) {
-    
-    cat(x)
-    dat <- df %>% 
-      filter(description == x)
-    
-    myCorpus <- Corpus(VectorSource(dat$text)) %>%
-      tm_map(removePunctuation) %>%
-      tm_map(stripWhitespace) %>%
-      tm_map(removeWords, stopwords("english"))
-    
-    dtm <- DocumentTermMatrix(myCorpus)
-    # find the sum of words in each Document
-    rowTotals <- apply(dtm , 1, sum)
-    dtm.new   <- dtm[rowTotals> 0, ]
-    # collapse matrix by summing over columns
-    freq <- colSums(as.matrix(dtm))
-    # create sort order (descending)
-    ord <- order(freq, decreasing=TRUE)
-    
-    list(emoji = rep(x, top), words = names(freq[ord][1:top]), frequency = freq[ord][1:top]) 
-    
-  }) %>% 
-    bind_rows
-  
-}
-
+## ---- emojis associated with words in tweets ----
 # tweets
 raw_texts <- emojis_matching(usermedia$text, matchto, description) %>% 
   select(-sentiment, -count) %>%
@@ -235,7 +235,7 @@ raw_texts <- emojis_matching(usermedia$text, matchto, description) %>%
 word_emojis <- wordFreqEmojis(raw_texts, raw_texts$text, raw_texts$description) %>% 
   filter(!is.na(words))
 
-## Emojis and weekdays
+## ---- emojis and weekdays ----
 emojis_matching(usermedia$text, matchto, description) %>%
   merge(usermedia %>% select(text, created), by = "text") %>% 
   select(description, created) %>% 
@@ -244,7 +244,5 @@ emojis_matching(usermedia$text, matchto, description) %>%
   group_by(weekday) %>% 
   summarise(n = n()) %>% 
   arrange(-n)
-
-## emojis associated with time of the day (morning, afternoon, evening, night)?
 
  
