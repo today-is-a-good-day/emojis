@@ -1,1 +1,1 @@
-# Emoticons
+# Emojis
