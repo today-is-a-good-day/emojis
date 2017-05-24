@@ -120,7 +120,9 @@ access_token_secret <- twitCred$oauthSecret
 setup_twitter_oauth(api_key,api_secret,access_token,access_token_secret)
 
 # read in emoji dictionary
-# where to get it: https://raw.githubusercontent.com/felipesua/sampleTexts/master/emojis.csv
+# I used to get the dictionary from Felipe: https://github.com/felipesua
+# but he put it down, so I uploaded the csv file to my github profile: 
+# https://raw.githubusercontent.com/today-is-a-good-day/emojis/master/emojis.csv
 # input your custom path to file
 emDict_raw <- read.csv2("emojis.csv") %>% 
   select(EN, ftu8, unicode) %>% 
