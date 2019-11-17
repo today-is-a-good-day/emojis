@@ -1,12 +1,10 @@
 # load packages and set options
 options(stringsAsFactors = FALSE)
-library(dplyr)
-library(twitteR)
-library(stringr)
+library(tidyverse)
+library(rtweet)
 library(rvest)
 library(Unicode)
 library(tm)
-library(ggplot2)
 
 Sys.setlocale(category = "LC_ALL", locale = "en_US.UTF-8")
 
@@ -29,7 +27,7 @@ count_matches <- function(string, matchto, description, sentiment = NA) {
   
   df <- data.frame(text = string, description = descr, count = cnt, sentiment = NA)
   
-  if (!is.na(sentiment) & length(sentiment[matches]) != 0) {
+  if (!is.na(sentiment) && length(sentiment[matches]) != 0) {
     
     df$sentiment <- sentiment[matches]
     
@@ -39,12 +37,14 @@ count_matches <- function(string, matchto, description, sentiment = NA) {
   
 }
 
-# this function applies count_matches on a vector o texts and outputs a data.frame
+# this function applies count_matches on a vector of texts and outputs a data.frame
 emojis_matching <- function(texts, matchto, description, sentiment = NA) {
   
   texts %>% 
-    lapply(count_matches, matchto = matchto, description = description, sentiment = sentiment) %>%
-    bind_rows
+    map_df(count_matches, 
+           matchto = matchto, 
+           description = description, 
+           sentiment = sentiment)
   
 }
 
@@ -82,8 +82,7 @@ cleanPosts <- function(text) {
 # function that outputs a df of emojis with their top 5 words (by frequency)
 wordFreqEmojis <- function(df, text = df$text, description = df$description, top = 5) {
   
-  
-  lapply(unique(description), function(x) {
+  map_df(unique(description), function(x) {
     
     dat <- df %>% 
       filter(description == x)
@@ -100,33 +99,24 @@ wordFreqEmojis <- function(df, text = df$text, description = df$description, top
     # collapse matrix by summing over columns
     freq <- colSums(as.matrix(dtm))
     # create sort order (descending)
-    ord <- order(freq, decreasing=TRUE)
+    ord <- order(freq, decreasing = TRUE)
     
-    list(emoji = rep(x, top), words = names(freq[ord][1:top]), frequency = freq[ord][1:top]) 
+    list(emoji = rep(x, top), 
+         words = names(freq[ord][1:top]), 
+         frequency = freq[ord][1:top]) 
     
-  }) %>% 
-    bind_rows
+  })
   
 }
 
 ## ---- setup ----
-# load twitter credentials and authorize
-# input your own credentials here
-load("twitCred.Rdata")
-api_key <- twitCred$consumerKey
-api_secret <- twitCred$consumerSecret
-access_token <- twitCred$oauthKey
-access_token_secret <- twitCred$oauthSecret
-setup_twitter_oauth(api_key,api_secret,access_token,access_token_secret)
-
 # read in emoji dictionary
 # I used to get the dictionary from Felipe: https://github.com/felipesua
 # but he put it down, so I uploaded the csv file to my github profile: 
 # https://raw.githubusercontent.com/today-is-a-good-day/emojis/master/emojis.csv
 # input your custom path to file
 emDict_raw <- read.csv2("emojis.csv") %>% 
-  select(EN, ftu8, unicode) %>% 
-  rename(description = EN, r.encoding = ftu8)
+  select(description = EN, r_encoding = ftu8, unicode)
 
 # plain skin tones
 skin_tones <- c("light skin tone", 
@@ -146,12 +136,11 @@ emDict <- emDict_raw %>%
   mutate(unicode = as.u_char(unicode))
 # all emojis with more than one unicode codepoint become NA 
 
-matchto <- emDict$r.encoding
+matchto <- emDict$r_encoding
 description <- emDict$description
 
 # get some sample data
-raw_usermedia <- userTimeline(user = "parishilton", n = 3200) %>%
-  twListToDF
+raw_usermedia <- get_timeline("ParisHilton", n = 3200)
 # convert to a format we can work with
 usermedia <- raw_usermedia %>% 
   mutate(text = iconv(text, from = "latin1", to = "ascii", sub = "byte"))
@@ -160,7 +149,7 @@ usermedia <- raw_usermedia %>%
 # rank emojis by occurence in data
 rank <- emojis_matching(usermedia$text, matchto, description) %>% 
   group_by(description) %>% 
-  summarise(n = sum(count)) %>%
+  summarise(n = sum(count, na.rm = TRUE)) %>%
   arrange(-n)
 
 head(rank, 10)
@@ -168,10 +157,10 @@ head(rank, 10)
 ## ---- tweets with most emojis ----
 tweets <- emojis_matching(usermedia$text, matchto, description) %>% 
   group_by(text) %>% 
-  summarise(n = sum(count)) %>%
-  # I add the time created because it makes usermedia_merged %>% mutate(date = as.Date(created)) %>% group_by(date) %>% summarise(sent = mean(sentiment_score, na.rm = TRUE)) %>% ggplot + aes(x = date, y = sent) + geom_point() + geom_line()it easiert to look up certain tweets
+  summarise(n = sum(count, na.rm = TRUE)) %>%
+  # I add the time created because it makes it easiert to look up certain tweets
   merge(usermedia, by = "text") %>% 
-  select(text, n, created) %>%
+  select(text, n, created_at) %>%
   arrange(-n)
 
 mean(tweets$n, na.rm = TRUE)
@@ -184,10 +173,11 @@ url <- "http://kt.ijs.si/data/Emoji_sentiment_ranking/index.html"
 emojis_raw <- url %>%
   read_html() %>%
   html_table() %>%
-  data.frame %>%
+  data.frame() %>%
   select(-Image.twemoji., -Sentiment.bar.c.i..95..)
-names(emojis_raw) <- c("char", "unicode", "occurrences", "position", "negative", "neutral", 
-                   "positive", "sentiment_score", "description", "block")
+names(emojis_raw) <- c("char", "unicode", "occurrences", "position", "negative", 
+                       "neutral", "positive", "sentiment_score", "description", 
+                       "block")
 # change numeric unicode to character unicode to be able to match with emDict 
 emojis <- emojis_raw %>%
   mutate(unicode = as.u_char(unicode)) %>%
@@ -203,23 +193,23 @@ emojis_merged <- emojis %>%
 # we loose 137 emojis that are not in emDict and for which we don't have an R encoding
 # but they seem to be black and white emojis not too often used in social media anyways
 
-new_matchto <- emojis_merged$r.encoding
+new_matchto <- emojis_merged$r_encoding
 new_description <- emojis_merged$description.x
 sentiment <- emojis_merged$sentiment_score
 
 sentiments <- emojis_matching(usermedia$text, new_matchto, new_description, sentiment) %>%
-  mutate(sentiment = count*as.numeric(sentiment)) %>%
+  mutate(sentiment = count * as.numeric(sentiment)) %>%
   group_by(text) %>% 
-  summarise(sentiment_score = sum(sentiment))
+  summarise(sentiment_score = sum(sentiment, na.rm = TRUE))
 
 usermedia_merged <- usermedia %>% 
-  select(text, created) %>% 
+  select(text, created_at) %>% 
   merge(sentiments, by = "text", all.x = TRUE)
 # some tweets don't have sentiment scores
 
 # this is how it looksl ike over time:
 usermedia_merged %>% 
-  mutate(date = as.Date(created)) %>% 
+  mutate(date = as.Date(created_at)) %>% 
   group_by(date) %>% 
   summarise(sent = mean(sentiment_score, na.rm = TRUE)) %>% 
     ggplot + 
@@ -239,10 +229,10 @@ word_emojis <- wordFreqEmojis(raw_texts, raw_texts$text, raw_texts$description) 
 
 ## ---- emojis and weekdays ----
 emojis_matching(usermedia$text, matchto, description) %>%
-  merge(usermedia %>% select(text, created), by = "text") %>% 
-  select(description, created) %>% 
-  mutate(weekday = weekdays(created)) %>% 
-  select(-created) %>% 
+  merge(usermedia %>% select(text, created_at), by = "text") %>% 
+  select(description, created_at) %>% 
+  mutate(weekday = weekdays(created_at)) %>% 
+  select(-created_at) %>% 
   group_by(weekday) %>% 
   summarise(n = n()) %>% 
   arrange(-n)
